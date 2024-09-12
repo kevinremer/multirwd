@@ -153,6 +153,7 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
         buyRewards.push(newRewardID);
         sendRewards.push(newRewardID);
         rewardTokens[newRewardID].tokenAddress = rewardToken_;
+        rewardTokens[newRewardID].isActive = true;
 
         emit adminAction("addRewardToken", rewardToken_, newRewardID);
 
@@ -231,6 +232,8 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
     /*
      * External calls from parent token
      */
+    
+    // Set the number of tokens held by a given holder
     function setShare(address shareholder_, uint256 amount_) external onlyToken {
         if(userShares[shareholder_] > 0){
             distributeDividend(shareholder_);
@@ -287,6 +290,7 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
     /*
      * Internal functions
      */
+
     // Remove inactive reward token from sendRewards if supply of reward tokens has been fully distributed
     function removeCompleteRewards() internal {
         uint256 curRewardToken;
@@ -302,7 +306,7 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
     }
 
     // Acquire more reward tokens for each token in buyRewards
-    function processWETH() internal {
+    function processWETH() internal nonReentrant {
         uint256 wethPerReward = (address(this).balance - wethRewardBalance) / buyRewards.length;
 
         uint256 curRewardToken;
