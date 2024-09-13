@@ -26,9 +26,11 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
 
     address public parentToken;
 
-    uint256 public newRewardID;
+    uint256 public newRewardID = 1000;
     uint256[] public sendRewards;
     uint256[] public buyRewards;
+
+    bool public pauseProcessing;
 
     struct userRewardInfo {
         uint256 totalExcluded;
@@ -136,6 +138,14 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
         emit adminAction("clearStuckToken", tokenAddress_, sendAmount);
     }
 
+    // Pause reward processing, all other functions will still be available
+    function setPauseProcessing(bool pauseProcessing_) external onlyOwner {
+        require(pauseProcessing != pauseProcessing_, "Status already set");
+        pauseProcessing = pauseProcessing_;
+
+        emit adminAction("setPauseProcessing", address(0), pauseProcessing_ ? 1 : 0);
+    }
+
     // Add reward token to contract
     function addRewardToken(address rewardToken_) external onlyOwner {
         uint256 curRewardToken;
@@ -185,7 +195,46 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
         if(!tokenFound) {
             require(tokenFound, "Token is not active");
         }
+    }
 
+    /* 
+     * ONLY TO BE USED IN THE EVENT THAT A REWARD TOKEN IS NO LONGER TRADABLE
+     * DUE TO EVENTS OUTSIDE OF PROJECT CONTROL
+     * YOU MUST TYPE 976431 INTO THE FIELD TO PREVENT ACCIDENTAL CALLS
+     */
+    function emergencyRemoveReward(uint256 type976431, address tokenAddress_) external onlyOwner {
+        require(type976431 == 976431, "Please enter the correct confiormation code");
+        uint256 curRewardToken;
+
+        for(uint256 serr = 0; serr < sendRewards.length; serr++) {
+            curRewardToken = sendRewards[serr];
+
+            if(rewardTokens[curRewardToken].tokenAddress == tokenAddress_) {
+                sendRewards[serr] = sendRewards[sendRewards.length-1];
+                sendRewards.pop();
+
+                break;
+            }
+        }
+
+        for(uint256 berr = 0; berr < buyRewards.length; berr++) {
+            if(buyRewards[berr] == curRewardToken) {
+                buyRewards[berr] = buyRewards[buyRewards.length-1];
+                buyRewards.pop();
+
+                break;
+            }
+        }
+
+        if(curRewardToken > 0) {
+            rewardTokens[curRewardToken].tokenAddress = address(0);
+            rewardTokens[curRewardToken].totalDividends = 0;
+            rewardTokens[curRewardToken].totalDistributed = 0;
+            rewardTokens[curRewardToken].dividendsPerShare = 0;
+            rewardTokens[curRewardToken].isActive = false;
+        }
+
+        emit adminAction("emergencyRemoveReward", tokenAddress_, curRewardToken);
     }
 
     // Reactivate reward token that hasn't fully distributed
@@ -257,32 +306,34 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
 
     // Loop through holders and distribute as needed, or acquire more reward tokens
     function process(uint256 gas_) external {
-        if(address(this).balance > swapWETHThreshold - wethRewardBalance) {
-            processWETH();
-            return;
-        }
-
-        uint256 shareholderCount = shareholders.length;
-
-        if(shareholderCount == 0) { return; }
-
-        uint256 gasUsed = 0;
-        uint256 gasLeft = gasleft();
-
-        uint256 iterations = 0;
-
-        while(gasUsed < gas_ && iterations < shareholderCount) {
-            if(currentIndex >= shareholderCount){
-                currentIndex = 0;
+        if(!pauseProcessing) {
+            if(address(this).balance > swapWETHThreshold - wethRewardBalance) {
+                processWETH();
+                return;
             }
 
-            distributeDividend(shareholders[currentIndex]);
+            uint256 shareholderCount = shareholders.length;
 
-            gasUsed = gasUsed + gasLeft - gasleft();
-            gasLeft = gasleft();
-            unchecked {
-                currentIndex++;
-                iterations++;
+            if(shareholderCount == 0) { return; }
+
+            uint256 gasUsed = 0;
+            uint256 gasLeft = gasleft();
+
+            uint256 iterations = 0;
+
+            while(gasUsed < gas_ && iterations < shareholderCount) {
+                if(currentIndex >= shareholderCount){
+                    currentIndex = 0;
+                }
+
+                distributeDividend(shareholders[currentIndex]);
+
+                gasUsed = gasUsed + gasLeft - gasleft();
+                gasLeft = gasleft();
+                unchecked {
+                    currentIndex++;
+                    iterations++;
+                }
             }
         }
     }
@@ -324,17 +375,22 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
                 path[0] = rewardRouter.WETH();
                 path[1] = rewardTokens[curRewardToken].tokenAddress;
 
-                rewardRouter.swapExactETHForTokensSupportingFeeOnTransferTokens{value: wethPerReward}(
-                    0,
-                    path,
-                    address(this),
-                    block.timestamp
-                );
+                try rewardRouter.swapExactETHForTokensSupportingFeeOnTransferTokens{value: wethPerReward}(
+                        0,
+                        path,
+                        address(this),
+                        block.timestamp
+                ) {
+                    uint256 amount = IERC20(rewardTokens[curRewardToken].tokenAddress).balanceOf(address(this)) - balanceBefore;
 
-                uint256 amount = IERC20(rewardTokens[curRewardToken].tokenAddress).balanceOf(address(this)) - balanceBefore;
+                    rewardTokens[curRewardToken].totalDividends = rewardTokens[curRewardToken].totalDividends + amount;
+                    rewardTokens[curRewardToken].dividendsPerShare = rewardTokens[curRewardToken].dividendsPerShare + (dividendsPerShareAccuracyFactor * amount / totalShares);
 
-                rewardTokens[curRewardToken].totalDividends = rewardTokens[curRewardToken].totalDividends + amount;
-                rewardTokens[curRewardToken].dividendsPerShare = rewardTokens[curRewardToken].dividendsPerShare + (dividendsPerShareAccuracyFactor * amount / totalShares);
+                    emit adminAction("processWETH", rewardTokens[curRewardToken].tokenAddress, 1);
+                } catch {
+                    emit adminAction("processWETH", rewardTokens[curRewardToken].tokenAddress, 0);
+                }
+
             }
         }
 
@@ -358,8 +414,11 @@ contract Multi_RWD_Distributor is Ownable, ReentrancyGuard {
                     (bool sendSuccess, ) = payable(shareholder_).call{value: amount}("");
                     emit sendRwd(shareholder_, amount, sendSuccess);
                 } else {
-                    IERC20(rewardTokens[curRewardToken].tokenAddress).transfer(shareholder_, amount);
-                    emit sendRwd(shareholder_, amount, true);
+                    try IERC20(rewardTokens[curRewardToken].tokenAddress).transfer(shareholder_, amount) {
+                        emit sendRwd(shareholder_, amount, true);
+                    } catch {
+                        emit adminAction("Failed to send reward", shareholder_, curRewardToken);
+                    }
                 }
 
                 userRewards[curRewardToken][shareholder_].totalRealised = userRewards[curRewardToken][shareholder_].totalRealised + amount;
